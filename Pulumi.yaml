@@ -1,0 +1,153 @@
+name: http-global-eventbridge
+runtime: yaml
+description: A minimal AWS Pulumi YAML program
+
+variables:
+  ENVIRONMENT: ${pulumi.stack}
+  APP_NAME: ${pulumi.project}
+
+  httpApiAssumeRole:
+    Fn::Invoke:
+      Function: aws:iam:getPolicyDocument
+      Arguments:
+        statements:
+          - actions:
+              - sts:AssumeRole
+            principals:
+              - type: Service
+                identifiers:
+                  - apigateway.amazonaws.com
+
+configuration:
+  cloudwatch_retention:
+    type: Number
+  event_archive_retention:
+    type: Number
+  event_source:
+    type: String
+  detail_type:
+    type: String
+  api_authorizer_uri:
+    type: String
+  api_route_path:
+    type: String
+
+resources:
+
+  # ------------------------------------------------------------------------------------
+  # Eventbridge
+  # https://www.pulumi.com/registry/packages/aws/api-docs/cloudwatch/eventbus/
+  # ------------------------------------------------------------------------------------
+  bus:
+    type: aws:cloudwatch:EventBus
+    properties:
+      name: ${APP_NAME}-${ENVIRONMENT}-eventbus
+
+  busArchive:
+    type: aws:cloudwatch:EventArchive
+    properties:
+      name: ${APP_NAME}-${ENVIRONMENT}-eventarchive
+      eventSourceArn: ${bus.arn}
+      retentionDays: ${event_archive_retention}
+    options:
+      parent: ${bus}
+
+  # ------------------------------------------------------------------------------------
+  # HTTP API
+  # https://www.pulumi.com/registry/packages/aws/api-docs/apigatewayv2/api/
+  # ------------------------------------------------------------------------------------
+  httpApi:
+    type: aws:apigatewayv2:Api
+    properties:
+      name: ${ENVIRONMENT}-${APP_NAME}-api
+      protocolType: HTTP
+
+  httpApiStage:
+    type: aws:apigatewayv2:Stage
+    properties:
+      apiId: ${httpApi.id}
+      autoDeploy: true
+      name: ${ENVIRONMENT}
+      accessLogSettings:
+        destinationArn: ${httpApiLogGroup.arn}
+        format: '{"requestId":"$context.requestId", "ip": "$context.identity.sourceIp", "requestTime":"$context.requestTime", "httpMethod":"$context.httpMethod","routeKey":"$context.routeKey", "status":"$context.status","protocol":"$context.protocol", "responseLength":"$context.responseLength","integrationRequestId":"$context.integration.requestId","integrationStatus":"$context.integration.integrationStatus","integrationLatency":"$context.integrationLatency","integrationErrorMessage":"$context.integrationErrorMessage","errorMessageString":"$context.error.message","authorizerError":"$context.authorizer.error"}'
+    options:
+      parent: ${httpApi}
+
+  httpApiLogGroup:
+    type: aws:cloudwatch:LogGroup
+    properties:
+      name: /aws/http/${ENVIRONMENT}-${APP_NAME}-api
+      retentionInDays: ${cloudwatch_retention}
+      tags:
+        Application: serviceA
+        Environment: production
+    options:
+      parent: ${httpApi}
+
+  httpApiAuthorizer:
+    type: aws:apigatewayv2:Authorizer
+    properties:
+      apiId: ${httpApi.id}
+      authorizerType: JWT
+      jwtConfiguration:
+        issuer: ${api_authorizer_uri}
+        audiences:
+          - ${ENVIRONMENT}-${APP_NAME}-api
+      identitySources:
+        - $request.header.Authorization
+    options:
+      parent: ${httpApi}
+
+  httpApiIntegration:
+    type: aws:apigatewayv2:Integration
+    properties:
+      apiId: ${httpApi.id}
+      credentialsArn: ${httpApiIntegrationRole.arn}
+      description: SQS example
+      integrationType: AWS_PROXY
+      integrationSubtype: EventBridge-PutEvents
+      payloadFormatVersion: "1.0"
+      passthroughBehavior: WHEN_NO_MATCH
+      requestParameters:
+        EventBusName: ${bus.name}
+        Detail: $request.body
+        DetailType: ${detail_type}
+        Source: ${event_source}
+    options:
+      parent: ${httpApi}
+
+  httpApiRoute:
+    type: aws:apigatewayv2:Route
+    properties:
+      apiId: ${httpApi.id}
+      routeKey: ${api_route_path}
+      authorizationType: JWT
+      authorizerId: ${httpApiAuthorizer.id}
+      authorizationScopes:
+        - "test"
+      target: integrations/${httpApiIntegration.id}
+    options:
+      parent: ${httpApi}
+
+  httpApiIntegrationRole:
+    type: aws:iam:Role
+    properties:
+      inlinePolicies:
+        - name: HttpApiToEventbridge
+          policy:
+            Fn::ToJSON:
+              Version: 2012-10-17
+              Statement:
+                - Action:
+                    - events:PutEvents
+                  Effect: Allow
+                  Resource: ${bus.arn}
+      assumeRolePolicy: ${["httpApiAssumeRole"].json}
+    options:
+      parent: ${httpApi}
+
+
+# outputs:
+  # # Export the name of the bucket
+  # bucketName: ${my-bucket.id}

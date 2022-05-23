@@ -1,0 +1,8 @@
+config:
+  aws:region: us-east-2
+  http-global-eventbridge:api_authorizer_uri: https://dev-61u57x8t.us.auth0.com/
+  http-global-eventbridge:api_route_path: POST /event
+  http-global-eventbridge:cloudwatch_retention: "30"
+  http-global-eventbridge:detail_type: PizzaOrder
+  http-global-eventbridge:event_archive_retention: "7"
+  http-global-eventbridge:event_source: pizza.events
